@@ -12,15 +12,19 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
-
+#os.environ["GOOGLE_API_KEY"] = "<API_KEY>"  # You can remove this if using .env
 
 # Configure Gemini API
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))  # Make sure your .env has GOOGLE_API_KEY
 
 # ----------------- Utility Functions ------------------
 
-
-
+import sys
+try:
+    import pysqlite3
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    pass 
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
