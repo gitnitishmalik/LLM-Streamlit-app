@@ -21,12 +21,9 @@ load_dotenv()
 
 def get_api_key():
     try:
-        secrets_path = os.path.join(os.path.expanduser("~"), ".streamlit", "secrets.toml")
-        if os.path.exists(secrets_path):
-            return st.secrets["GOOGLE_API_KEY"]
+        return st.secrets["GOOGLE_API_KEY"]
     except Exception:
-        pass
-    return os.getenv("GOOGLE_API_KEY")
+        return os.getenv("GOOGLE_API_KEY")
 
 GOOGLE_API_KEY = get_api_key()
 if not GOOGLE_API_KEY:
@@ -41,31 +38,23 @@ try:
 except Exception:
     pass
 
-# Always use a writeable directory on cloud
-def pick_persist_dir() -> str:
-    candidates = ["/tmp/chroma_db", "./chroma_db"]
-    for path in candidates:
-        try:
-            os.makedirs(path, exist_ok=True)
-            testfile = os.path.join(path, ".write_test")
-            with open(testfile, "w") as f:
-                f.write("ok")
-            os.remove(testfile)
-            return path
-        except OSError as e:
-            if e.errno not in (errno.EACCES, errno.EROFS):
-                # if it's a different error, still skip to next candidate
-                pass
-    # Fallback to /tmp
-    return "/tmp/chroma_db"
+# Always use a guaranteed writable dir for vector store
+VECTOR_STORE_DIR = "/tmp/chroma_db"
+os.makedirs(VECTOR_STORE_DIR, exist_ok=True)
 
-VECTOR_STORE_DIR = pick_persist_dir()
+# Test write permissions immediately
+try:
+    with open(os.path.join(VECTOR_STORE_DIR, ".write_test"), "w") as f:
+        f.write("ok")
+    os.remove(os.path.join(VECTOR_STORE_DIR, ".write_test"))
+except OSError as e:
+    raise RuntimeError(f"❌ Vector store directory is not writable: {VECTOR_STORE_DIR}\nError: {e}")
 
 # =========================
 # Helpers
 # =========================
 def get_pdf_text(pdf_docs):
-    """Extract text, skipping pages that return None/empty."""
+    """Extract text from PDFs, skipping empty pages."""
     parts = []
     for pdf in pdf_docs:
         try:
@@ -147,7 +136,6 @@ def answer_question(q):
     try:
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         db = Chroma(persist_directory=VECTOR_STORE_DIR, embedding_function=embeddings)
-        # Similarity search returns Document objects
         docs = db.similarity_search(q, k=4)
         docs = [d for d in docs if isinstance(d.page_content, str) and d.page_content.strip()]
         if not docs:
@@ -185,7 +173,7 @@ def main():
                 st.warning("Please upload at least one PDF.")
             else:
                 with st.spinner("Processing PDFs..."):
-                    reset_vector_store()  # ensure a clean, writable DB
+                    reset_vector_store()
                     text = get_pdf_text(pdfs)
                     chunks = get_text_chunks(text)
                     ok = build_vector_store(chunks)
