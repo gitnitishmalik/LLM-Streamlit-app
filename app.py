@@ -19,12 +19,7 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))  # Make sure your .env has 
 
 # ----------------- Utility Functions ------------------
 
-import sys
-try:
-    import pysqlite3
-    sys.modules["sqlite3"] = pysqlite3
-except ImportError:
-    pass 
+
 
 def get_pdf_text(pdf_docs):
     text = ""

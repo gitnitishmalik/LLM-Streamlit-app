@@ -6,7 +6,6 @@ PyPDF2
 chromadb
 langchain_google_genai
 langchain-community
-pysqlite3
 
 
 
