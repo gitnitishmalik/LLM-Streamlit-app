@@ -1,4 +1,41 @@
-.env	
-venv/
-chroma_db/
+# Python cache
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# Environment variables
+*.env
+*.env.*
+
+# VS Code settings
+.vscode/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Pytest cache
+.pytest_cache/
+
+# LangChain/ChromaDB local storage
+chroma/
+*.sqlite
+*.db
+
+# Temporary files
+*.tmp
+*.temp
