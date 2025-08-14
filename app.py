@@ -11,13 +11,13 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 
-# ----------------- Load environment variables ------------------
-load_dotenv()  # Loads .env file
-google_api_key = os.getenv("GOOGLE_API_KEY")
+# ----------------- Load API Key ------------------
+load_dotenv()  # For local development
+
+google_api_key = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 if not google_api_key:
-    raise ValueError("❌ GOOGLE_API_KEY not found. Please set it in your .env file.")
-
+    st.error("No GOOGLE_API_KEY found. Please add it to .streamlit/secrets.toml or set it as an environment variable.")
 # Configure Gemini API
 genai.configure(api_key=google_api_key)
 
@@ -43,8 +43,7 @@ def get_pdf_text(pdf_docs):
 def get_text_chunks(text):
     """Split extracted text into chunks"""
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
-    chunks = text_splitter.split_text(text)
-    return chunks
+    return text_splitter.split_text(text)
 
 def get_vector_store(text_chunks):
     """Create a Chroma vector store from text chunks"""
@@ -71,8 +70,7 @@ def get_conversational_chain():
     """
     model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
-    chain = load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
-    return chain
+    return load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
 
 def user_input(user_question):
     """Process user question and display response"""
