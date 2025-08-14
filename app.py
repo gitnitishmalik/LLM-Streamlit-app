@@ -1,6 +1,7 @@
 import os
 import sys
 import shutil
+import errno
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
@@ -13,13 +14,12 @@ from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 import chromadb
 
-# --------------------------
-# Load environment variables
-# --------------------------
+# =========================
+# Config & environment
+# =========================
 load_dotenv()
 
 def get_api_key():
-    """Get API key from Streamlit secrets (if available) or .env."""
     try:
         secrets_path = os.path.join(os.path.expanduser("~"), ".streamlit", "secrets.toml")
         if os.path.exists(secrets_path):
@@ -28,139 +28,169 @@ def get_api_key():
         pass
     return os.getenv("GOOGLE_API_KEY")
 
-google_api_key = get_api_key()
+GOOGLE_API_KEY = get_api_key()
+if not GOOGLE_API_KEY:
+    raise ValueError("❌ GOOGLE_API_KEY not found. Set it in .env (local) or Streamlit secrets (cloud).")
 
-if not google_api_key:
-    raise ValueError("❌ GOOGLE_API_KEY not found. "
-                     "Set it in .env (Local) or Streamlit secrets (Cloud)")
+genai.configure(api_key=GOOGLE_API_KEY)
 
-# Configure Gemini API
-genai.configure(api_key=google_api_key)
-
-# --------------------------
-# SQLite fix for Chroma
-# --------------------------
+# SQLite shim for some envs
 try:
-    import pysqlite3
-    sys.modules["sqlite3"] = pysqlite3
-except ImportError:
+    import pysqlite3  # noqa
+    sys.modules["sqlite3"] = __import__("pysqlite3")
+except Exception:
     pass
 
-# --------------------------
-# Utility Functions
-# --------------------------
+# Always use a writeable directory on cloud
+def pick_persist_dir() -> str:
+    candidates = ["/tmp/chroma_db", "./chroma_db"]
+    for path in candidates:
+        try:
+            os.makedirs(path, exist_ok=True)
+            testfile = os.path.join(path, ".write_test")
+            with open(testfile, "w") as f:
+                f.write("ok")
+            os.remove(testfile)
+            return path
+        except OSError as e:
+            if e.errno not in (errno.EACCES, errno.EROFS):
+                # if it's a different error, still skip to next candidate
+                pass
+    # Fallback to /tmp
+    return "/tmp/chroma_db"
+
+VECTOR_STORE_DIR = pick_persist_dir()
+
+# =========================
+# Helpers
+# =========================
 def get_pdf_text(pdf_docs):
-    """Extract text from uploaded PDFs."""
-    text = ""
+    """Extract text, skipping pages that return None/empty."""
+    parts = []
     for pdf in pdf_docs:
-        pdf_reader = PdfReader(pdf)
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text
-    return text
+        try:
+            reader = PdfReader(pdf)
+            for page in reader.pages:
+                t = page.extract_text() or ""
+                t = t.strip()
+                if t:
+                    parts.append(t)
+        except Exception as e:
+            st.warning(f"Couldn't read one PDF ({getattr(pdf, 'name', 'unknown')}): {e}")
+    return "\n\n".join(parts)
 
 def get_text_chunks(text):
-    """Split text into chunks for embeddings."""
-    return RecursiveCharacterTextSplitter(
-        chunk_size=10000, chunk_overlap=1000
-    ).split_text(text)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=300)
+    return splitter.split_text(text)
 
-def get_vector_store(text_chunks):
-    """Create and persist Chroma vector store safely."""
-    # Clear old/corrupted DB
-    if os.path.exists("chroma_db"):
-        shutil.rmtree("chroma_db")
+def _clean_chunks(chunks):
+    return [c.strip() for c in chunks if isinstance(c, str) and c and c.strip()]
 
-    # Filter out invalid/empty chunks
-    text_chunks = [chunk.strip() for chunk in text_chunks if isinstance(chunk, str) and chunk.strip()]
+def reset_vector_store():
+    if os.path.exists(VECTOR_STORE_DIR):
+        shutil.rmtree(VECTOR_STORE_DIR, ignore_errors=True)
+    os.makedirs(VECTOR_STORE_DIR, exist_ok=True)
 
-    if not text_chunks:
-        st.error("❌ No valid text chunks to index. Please check your PDF content.")
-        return
-
+def build_vector_store(chunks):
+    """Create & persist Chroma safely in a writable dir."""
+    chunks = _clean_chunks(chunks)
+    if not chunks:
+        st.error("❌ No valid text to index from the uploaded PDFs.")
+        return False
     try:
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        vector_store = Chroma.from_texts(
-            text_chunks,
+        vs = Chroma.from_texts(
+            chunks,
             embedding=embeddings,
-            persist_directory="chroma_db"
+            persist_directory=VECTOR_STORE_DIR,
         )
-        vector_store.persist()
-        st.success("✅ Vector store created successfully!")
-
+        vs.persist()
+        return True
     except chromadb.errors.InternalError as e:
         st.error(f"❌ Chroma internal error: {e}")
-        st.warning("Clearing and retrying...")
-        if os.path.exists("chroma_db"):
-            shutil.rmtree("chroma_db")
+        st.info("Clearing the vector store and retrying once...")
+        reset_vector_store()
+        try:
+            embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+            vs = Chroma.from_texts(
+                chunks,
+                embedding=embeddings,
+                persist_directory=VECTOR_STORE_DIR,
+            )
+            vs.persist()
+            return True
+        except Exception as e2:
+            st.error(f"Failed again after reset: {e2}")
+            return False
+    except PermissionError:
+        st.error("❌ Write permission denied for vector store directory.")
+        return False
 
-def get_conversational_chain():
-    """Load QA chain with Gemini model."""
+def get_chain():
     prompt_template = """
-    Answer the question as detailed as possible from the provided context. 
-    If the answer is not in the context, say "Answer is not available in the context" — don't make anything up.
+Answer the question as thoroughly as possible from the provided context.
+If the answer is not in the context, say "Answer is not available in the context".
 
-    Context:
-    {context}
+Context:
+{context}
 
-    Question:
-    {question}
+Question:
+{question}
 
-    Answer:
-    """
-    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
+Answer:
+"""
+    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.2)
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
     return load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
 
-def user_input(user_question):
-    """Search in vector store and get response."""
+def answer_question(q):
     try:
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        db = Chroma(persist_directory="chroma_db", embedding_function=embeddings)
-        results = db.similarity_search(user_question)
-
-        clean_results = [doc for doc in results if isinstance(doc.page_content, str) and doc.page_content.strip()]
-
-        if not clean_results:
-            st.warning("⚠ No valid results found. Try re-uploading PDFs.")
+        db = Chroma(persist_directory=VECTOR_STORE_DIR, embedding_function=embeddings)
+        # Similarity search returns Document objects
+        docs = db.similarity_search(q, k=4)
+        docs = [d for d in docs if isinstance(d.page_content, str) and d.page_content.strip()]
+        if not docs:
+            st.warning("No valid results in the vector store. Try processing PDFs again.")
             return
-
-        chain = get_conversational_chain()
-        response = chain({"input_documents": clean_results, "question": user_question})
-        st.write("💬 Reply:", response["output_text"])
-
+        chain = get_chain()
+        resp = chain({"input_documents": docs, "question": q})
+        st.write("💬 Reply:", resp.get("output_text", "").strip() or "(empty)")
     except chromadb.errors.InternalError as e:
-        st.error(f"❌ Chroma DB error: {e}")
-        st.info("Rebuilding vector store...")
-        if os.path.exists("chroma_db"):
-            shutil.rmtree("chroma_db")
-        st.warning("⚠ Vector store cleared. Please re-upload PDFs.")
+        st.error(f"Chroma error while querying: {e}")
+        st.info("Resetting the vector store...")
+        reset_vector_store()
+        st.warning("Vector store cleared. Please re-upload & process PDFs.")
 
-# --------------------------
-# Streamlit App
-# --------------------------
+# =========================
+# Streamlit UI
+# =========================
 def main():
     st.set_page_config(page_title="Chat with PDF using Gemini")
     st.header("📄 Chat with PDF using Gemini ✨")
 
-    # User Question
-    question = st.text_input("Ask a question about your uploaded PDFs:")
-    if question:
-        user_input(question)
+    # Ask
+    q = st.text_input("Ask a question about your uploaded PDFs:")
+    if q:
+        answer_question(q)
 
-    # Sidebar for PDF Upload
+    # Upload & index
     with st.sidebar:
         st.title("📚 Upload PDF Files")
-        pdf_docs = st.file_uploader("Upload your PDF(s)", type=["pdf"], accept_multiple_files=True)
+        st.caption(f"Vector store path: `{VECTOR_STORE_DIR}`")
+        pdfs = st.file_uploader("Upload your PDF(s)", type=["pdf"], accept_multiple_files=True)
+
         if st.button("Submit & Process"):
-            if pdf_docs:
-                with st.spinner("Processing PDFs..."):
-                    text = get_pdf_text(pdf_docs)
-                    chunks = get_text_chunks(text)
-                    get_vector_store(chunks)
+            if not pdfs:
+                st.warning("Please upload at least one PDF.")
             else:
-                st.warning("⚠ Please upload at least one PDF.")
+                with st.spinner("Processing PDFs..."):
+                    reset_vector_store()  # ensure a clean, writable DB
+                    text = get_pdf_text(pdfs)
+                    chunks = get_text_chunks(text)
+                    ok = build_vector_store(chunks)
+                    if ok:
+                        st.success("✅ PDFs processed and indexed!")
 
 if __name__ == "__main__":
     main()
