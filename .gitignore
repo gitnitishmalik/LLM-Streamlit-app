@@ -39,6 +39,3 @@ chroma/
 # Temporary files
 *.tmp
 *.temp
-
-
-.streamlit/
