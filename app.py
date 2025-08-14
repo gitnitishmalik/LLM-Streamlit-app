@@ -9,6 +9,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
+import sqlite3
+import sys
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +20,19 @@ os.environ["GOOGLE_API_KEY"] = "AIzaSyAKGY-pN5QMPRzgPxBsWFArQ2_0RLVSiic"  # You 
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))  # Make sure your .env has GOOGLE_API_KEY
 
 # ----------------- Utility Functions ------------------
+
+MIN_SQLITE_VERSION = (3, 35, 0)
+current_version = tuple(map(int, sqlite3.sqlite_version.split(".")))
+
+if current_version < MIN_SQLITE_VERSION:
+    sys.stderr.write(
+        f"\n[ERROR] Your SQLite version is {sqlite3.sqlite_version}, "
+        f"but Chroma requires >= {'.'.join(map(str, MIN_SQLITE_VERSION))}.\n"
+        "Please upgrade Python (>= 3.10.12 recommended) or SQLite.\n"
+        "Docs: https://docs.trychroma.com/troubleshooting#sqlite\n\n"
+    )
+    sys.exit(1)
+
 
 def get_pdf_text(pdf_docs):
     text = ""
