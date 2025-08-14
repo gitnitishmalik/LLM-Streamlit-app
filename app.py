@@ -11,6 +11,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
+import chromadb
 
 # --------------------------
 # Load environment variables
@@ -54,8 +55,9 @@ def get_pdf_text(pdf_docs):
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
         for page in pdf_reader.pages:
-            if page.extract_text():
-                text += page.extract_text()
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text
     return text
 
 def get_text_chunks(text):
@@ -65,13 +67,33 @@ def get_text_chunks(text):
     ).split_text(text)
 
 def get_vector_store(text_chunks):
-    """Create and persist Chroma vector store."""
-    text_chunks = [chunk for chunk in text_chunks if isinstance(chunk, str) and chunk.strip()]
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = Chroma.from_texts(
-        text_chunks, embedding=embeddings, persist_directory="chroma_db"
-    )
-    vector_store.persist()
+    """Create and persist Chroma vector store safely."""
+    # Clear old/corrupted DB
+    if os.path.exists("chroma_db"):
+        shutil.rmtree("chroma_db")
+
+    # Filter out invalid/empty chunks
+    text_chunks = [chunk.strip() for chunk in text_chunks if isinstance(chunk, str) and chunk.strip()]
+
+    if not text_chunks:
+        st.error("❌ No valid text chunks to index. Please check your PDF content.")
+        return
+
+    try:
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        vector_store = Chroma.from_texts(
+            text_chunks,
+            embedding=embeddings,
+            persist_directory="chroma_db"
+        )
+        vector_store.persist()
+        st.success("✅ Vector store created successfully!")
+
+    except chromadb.errors.InternalError as e:
+        st.error(f"❌ Chroma internal error: {e}")
+        st.warning("Clearing and retrying...")
+        if os.path.exists("chroma_db"):
+            shutil.rmtree("chroma_db")
 
 def get_conversational_chain():
     """Load QA chain with Gemini model."""
@@ -92,13 +114,12 @@ def get_conversational_chain():
     return load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
 
 def user_input(user_question):
-    """Search in vector store and get response, rebuild DB if corrupted."""
+    """Search in vector store and get response."""
     try:
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         db = Chroma(persist_directory="chroma_db", embedding_function=embeddings)
         results = db.similarity_search(user_question)
 
-        # Filter invalid docs
         clean_results = [doc for doc in results if isinstance(doc.page_content, str) and doc.page_content.strip()]
 
         if not clean_results:
@@ -109,9 +130,9 @@ def user_input(user_question):
         response = chain({"input_documents": clean_results, "question": user_question})
         st.write("💬 Reply:", response["output_text"])
 
-    except Exception as e:
-        st.error(f"❌ Error reading vector store: {e}")
-        st.info("Rebuilding Chroma DB...")
+    except chromadb.errors.InternalError as e:
+        st.error(f"❌ Chroma DB error: {e}")
+        st.info("Rebuilding vector store...")
         if os.path.exists("chroma_db"):
             shutil.rmtree("chroma_db")
         st.warning("⚠ Vector store cleared. Please re-upload PDFs.")
@@ -138,7 +159,6 @@ def main():
                     text = get_pdf_text(pdf_docs)
                     chunks = get_text_chunks(text)
                     get_vector_store(chunks)
-                    st.success("✅ PDFs processed and indexed!")
             else:
                 st.warning("⚠ Please upload at least one PDF.")
 
