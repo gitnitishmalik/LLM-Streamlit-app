@@ -11,26 +11,42 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 
-# Load .env locally
+# --------------------------
+# Load environment variables
+# --------------------------
 load_dotenv()
 
-# Get API key from Streamlit secrets first, then local .env
-google_api_key = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
+def get_api_key():
+    """Get API key from Streamlit secrets (if available) or .env."""
+    try:
+        # Only try st.secrets if secrets.toml exists
+        if os.path.exists(os.path.join(os.path.expanduser("~"), ".streamlit", "secrets.toml")):
+            return st.secrets["GOOGLE_API_KEY"]
+    except Exception:
+        pass
+    return os.getenv("GOOGLE_API_KEY")
+
+google_api_key = get_api_key()
 
 if not google_api_key:
-    raise ValueError("❌ GOOGLE_API_KEY not found. Set it in Streamlit secrets (Cloud) or .env (Local)")
+    raise ValueError("❌ GOOGLE_API_KEY not found. "
+                     "Set it in .env (Local) or Streamlit secrets (Cloud)")
 
 # Configure Gemini API
 genai.configure(api_key=google_api_key)
 
-# Fix SQLite for Chroma
+# --------------------------
+# SQLite fix for Chroma
+# --------------------------
 try:
     import pysqlite3
     sys.modules["sqlite3"] = pysqlite3
 except ImportError:
     pass
 
-# Utility functions
+# --------------------------
+# Utility Functions
+# --------------------------
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
@@ -41,11 +57,15 @@ def get_pdf_text(pdf_docs):
     return text
 
 def get_text_chunks(text):
-    return RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000).split_text(text)
+    return RecursiveCharacterTextSplitter(
+        chunk_size=10000, chunk_overlap=1000
+    ).split_text(text)
 
 def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = Chroma.from_texts(text_chunks, embedding=embeddings, persist_directory="chroma_db")
+    vector_store = Chroma.from_texts(
+        text_chunks, embedding=embeddings, persist_directory="chroma_db"
+    )
     vector_store.persist()
 
 def get_conversational_chain():
@@ -73,7 +93,9 @@ def user_input(user_question):
     response = chain({"input_documents": docs, "question": user_question})
     st.write("💬 Reply:", response["output_text"])
 
-# Streamlit app
+# --------------------------
+# Streamlit App
+# --------------------------
 def main():
     st.set_page_config(page_title="Chat with PDF using Gemini")
     st.header("📄 Chat with PDF using Gemini ✨")
