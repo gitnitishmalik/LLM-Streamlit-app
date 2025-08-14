@@ -36,7 +36,7 @@ def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = Chroma.from_texts(text_chunks, embedding=embeddings, persist_directory="chroma_db")
     vector_store.persist()
-    return vector_store
+    return Chroma.from_texts(text_chunks, embedding=embeddings)
 
 def get_conversational_chain():
     prompt_template = """
