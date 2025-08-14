@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
@@ -19,8 +20,8 @@ load_dotenv()
 def get_api_key():
     """Get API key from Streamlit secrets (if available) or .env."""
     try:
-        # Only try st.secrets if secrets.toml exists
-        if os.path.exists(os.path.join(os.path.expanduser("~"), ".streamlit", "secrets.toml")):
+        secrets_path = os.path.join(os.path.expanduser("~"), ".streamlit", "secrets.toml")
+        if os.path.exists(secrets_path):
             return st.secrets["GOOGLE_API_KEY"]
     except Exception:
         pass
@@ -48,6 +49,7 @@ except ImportError:
 # Utility Functions
 # --------------------------
 def get_pdf_text(pdf_docs):
+    """Extract text from uploaded PDFs."""
     text = ""
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
@@ -57,11 +59,14 @@ def get_pdf_text(pdf_docs):
     return text
 
 def get_text_chunks(text):
+    """Split text into chunks for embeddings."""
     return RecursiveCharacterTextSplitter(
         chunk_size=10000, chunk_overlap=1000
     ).split_text(text)
 
 def get_vector_store(text_chunks):
+    """Create and persist Chroma vector store."""
+    text_chunks = [chunk for chunk in text_chunks if isinstance(chunk, str) and chunk.strip()]
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = Chroma.from_texts(
         text_chunks, embedding=embeddings, persist_directory="chroma_db"
@@ -69,6 +74,7 @@ def get_vector_store(text_chunks):
     vector_store.persist()
 
 def get_conversational_chain():
+    """Load QA chain with Gemini model."""
     prompt_template = """
     Answer the question as detailed as possible from the provided context. 
     If the answer is not in the context, say "Answer is not available in the context" — don't make anything up.
@@ -86,12 +92,29 @@ def get_conversational_chain():
     return load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
 
 def user_input(user_question):
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    db = Chroma(persist_directory="chroma_db", embedding_function=embeddings)
-    docs = db.similarity_search(user_question)
-    chain = get_conversational_chain()
-    response = chain({"input_documents": docs, "question": user_question})
-    st.write("💬 Reply:", response["output_text"])
+    """Search in vector store and get response, rebuild DB if corrupted."""
+    try:
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        db = Chroma(persist_directory="chroma_db", embedding_function=embeddings)
+        results = db.similarity_search(user_question)
+
+        # Filter invalid docs
+        clean_results = [doc for doc in results if isinstance(doc.page_content, str) and doc.page_content.strip()]
+
+        if not clean_results:
+            st.warning("⚠ No valid results found. Try re-uploading PDFs.")
+            return
+
+        chain = get_conversational_chain()
+        response = chain({"input_documents": clean_results, "question": user_question})
+        st.write("💬 Reply:", response["output_text"])
+
+    except Exception as e:
+        st.error(f"❌ Error reading vector store: {e}")
+        st.info("Rebuilding Chroma DB...")
+        if os.path.exists("chroma_db"):
+            shutil.rmtree("chroma_db")
+        st.warning("⚠ Vector store cleared. Please re-upload PDFs.")
 
 # --------------------------
 # Streamlit App
@@ -100,10 +123,12 @@ def main():
     st.set_page_config(page_title="Chat with PDF using Gemini")
     st.header("📄 Chat with PDF using Gemini ✨")
 
+    # User Question
     question = st.text_input("Ask a question about your uploaded PDFs:")
     if question:
         user_input(question)
 
+    # Sidebar for PDF Upload
     with st.sidebar:
         st.title("📚 Upload PDF Files")
         pdf_docs = st.file_uploader("Upload your PDF(s)", type=["pdf"], accept_multiple_files=True)
