@@ -1,11 +1,11 @@
 # ================== SQLite Version Fix ==================
 # Must run BEFORE importing Chroma or anything using sqlite3 internally.
-try:
-    import pysqlite3
-    import sys
-    sys.modules["sqlite3"] = pysqlite3
-except ImportError:
-    import sqlite3  # Fallback to system sqlite3
+#try:
+   #import pysqlite3
+   #import sys
+##sys.modules["sqlite3"] = pysqlite3
+#except ImportError:
+   #import sqlite3  # Fallback to system sqlite3
 # =========================================================
 
 import os
