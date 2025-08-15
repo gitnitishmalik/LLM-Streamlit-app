@@ -51,8 +51,13 @@ def get_text_chunks(text):
 def get_vector_store(text_chunks):
     """Create a Chroma vector store from text chunks"""
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    
+    # Ensure persist directory exists
+    persist_dir = os.getenv("CHROMA_PERSIST_DIR", "chroma_db")
+    os.makedirs(persist_dir, exist_ok=True)
+    
     vector_store = Chroma.from_texts(
-        text_chunks, embedding=embeddings, persist_directory="chroma_db"
+        text_chunks, embedding=embeddings, persist_directory=persist_dir
     )
     vector_store.persist()
     return vector_store
@@ -78,7 +83,14 @@ def get_conversational_chain():
 def user_input(user_question):
     """Process user question and display response"""
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    new_db = Chroma(persist_directory="chroma_db", embedding_function=embeddings)
+    persist_dir = os.getenv("CHROMA_PERSIST_DIR", "chroma_db")
+    
+    # Ensure vector store exists before querying
+    if not os.path.exists(persist_dir):
+        st.error("Vector store not found. Please process PDFs first.")
+        return
+
+    new_db = Chroma(persist_directory=persist_dir, embedding_function=embeddings)
     docs = new_db.similarity_search(user_question)
     chain = get_conversational_chain()
     response = chain({"input_documents": docs, "question": user_question})
