@@ -1,37 +1,45 @@
+# ----------------- SQLite Fix MUST come before Chroma imports -----------------
+try:
+    import pysqlite3
+    import sys
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    pass  # Will use system sqlite3 if pysqlite3 not available
+
+# ----------------- Imports -----------------
 import os
-import sys
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 import google.generativeai as genai
 from langchain_community.vectorstores import Chroma
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 
-# ----------------- Load API Key ------------------
-load_dotenv()  # Load from local .env file if present
+
+# ----------------- Load API Key -----------------
+load_dotenv()  # Load from .env if exists
 
 # Try Streamlit secrets first, then environment variable
-google_api_key = st.secrets.get("GOOGLE_API_KEY") if "GOOGLE_API_KEY" in st.secrets else os.getenv("GOOGLE_API_KEY")
+google_api_key = (
+    st.secrets.get("GOOGLE_API_KEY")
+    if "GOOGLE_API_KEY" in st.secrets
+    else os.getenv("GOOGLE_API_KEY")
+)
 
 if not google_api_key:
-    st.error("No GOOGLE_API_KEY found. Add it to .streamlit/secrets.toml or set it as an environment variable.")
-    st.stop()  # Stop the app if API key is missing
+    st.error(
+        "❌ No GOOGLE_API_KEY found.\nAdd it to `.streamlit/secrets.toml` or set as an environment variable."
+    )
+    st.stop()
 
-# Configure Gemini API
+# Configure Gemini
 genai.configure(api_key=google_api_key)
 
-# SQLite fix for Chroma (optional, if needed)
-try:
-    import pysqlite3
-    sys.modules["sqlite3"] = pysqlite3
-except ImportError:
-    pass 
 
-# ----------------- Utility Functions ------------------
+# ----------------- Utility Functions -----------------
 def get_pdf_text(pdf_docs):
     """Extract text from uploaded PDFs"""
     text = ""
@@ -43,25 +51,34 @@ def get_pdf_text(pdf_docs):
                 text += page_text
     return text
 
+
 def get_text_chunks(text):
     """Split extracted text into chunks"""
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=10000, chunk_overlap=1000
+    )
     return text_splitter.split_text(text)
 
+
 def get_vector_store(text_chunks):
-    """Create a Chroma vector store from text chunks"""
+    """Create and persist Chroma vector store"""
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = Chroma.from_texts(
-        text_chunks, embedding=embeddings, persist_directory="chroma_db"
-    )
-    vector_store.persist()
-    return vector_store
+    try:
+        vector_store = Chroma.from_texts(
+            text_chunks, embedding=embeddings, persist_directory="chroma_db"
+        )
+        vector_store.persist()
+        return vector_store
+    except RuntimeError as e:
+        st.error(f"Chroma error: {e}")
+        st.stop()
+
 
 def get_conversational_chain():
-    """Create a QA chain for answering questions"""
+    """Return QA chain"""
     prompt_template = """
     Answer the question as detailed as possible from the provided context. 
-    If the answer is not in the context, say "Answer is not available in the context" — don't make anything up.
+    If the answer is not in the context, say "Answer is not available in the context".
 
     Context:
     {context}
@@ -72,28 +89,34 @@ def get_conversational_chain():
     Answer:
     """
     model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
-    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+    prompt = PromptTemplate(
+        template=prompt_template, input_variables=["context", "question"]
+    )
     return load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
 
+
 def user_input(user_question):
-    """Process user question and display response"""
+    """Process user question"""
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    new_db = Chroma(persist_directory="chroma_db", embedding_function=embeddings)
+    new_db = Chroma(
+        persist_directory="chroma_db", embedding_function=embeddings
+    )
     docs = new_db.similarity_search(user_question)
     chain = get_conversational_chain()
     response = chain({"input_documents": docs, "question": user_question})
     st.write("💬 Reply:", response["output_text"])
 
-# ----------------- Streamlit App ------------------
+
+# ----------------- Streamlit App -----------------
 def main():
-    st.set_page_config(page_title="Chat with PDF using Gemini")
+    st.set_page_config(page_title="Chat with PDF using Gemini", layout="wide")
     st.header("📄 Chat with PDF using Gemini ✨")
 
-    # Sidebar for PDF upload
+    # Sidebar
     with st.sidebar:
         st.title("📚 Upload PDF Files")
         pdf_docs = st.file_uploader(
-            "Upload your PDF file(s)", type=["pdf"], accept_multiple_files=True
+            "Upload PDF(s)", type=["pdf"], accept_multiple_files=True
         )
         if st.button("Submit & Process"):
             if pdf_docs:
@@ -105,10 +128,11 @@ def main():
             else:
                 st.warning("⚠️ Please upload at least one PDF file.")
 
-    # User question input
+    # Question box
     user_question = st.text_input("Ask a question about your uploaded PDFs:")
     if user_question:
         user_input(user_question)
+
 
 if __name__ == "__main__":
     main()
