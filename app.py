@@ -1,12 +1,13 @@
-# ----------------- SQLite Fix MUST come before Chroma imports -----------------
+# ================== SQLite Version Fix ==================
+# Must run BEFORE importing Chroma or anything using sqlite3 internally.
 try:
     import pysqlite3
     import sys
     sys.modules["sqlite3"] = pysqlite3
 except ImportError:
-    pass  # Will use system sqlite3 if pysqlite3 not available
+    import sqlite3  # Fallback to system sqlite3
+# =========================================================
 
-# ----------------- Imports -----------------
 import os
 import streamlit as st
 from dotenv import load_dotenv
@@ -22,20 +23,24 @@ from langchain.prompts import PromptTemplate
 # ----------------- Load API Key -----------------
 load_dotenv()  # Load from .env if exists
 
-# Try Streamlit secrets first, then environment variable
-google_api_key = (
-    st.secrets.get("GOOGLE_API_KEY")
-    if "GOOGLE_API_KEY" in st.secrets
-    else os.getenv("GOOGLE_API_KEY")
-)
+# Use Streamlit secrets if available, otherwise env var
+google_api_key = None
+try:
+    google_api_key = st.secrets.get("GOOGLE_API_KEY")
+except Exception:
+    pass
+
+if not google_api_key:
+    google_api_key = os.getenv("GOOGLE_API_KEY")
 
 if not google_api_key:
     st.error(
-        "❌ No GOOGLE_API_KEY found.\nAdd it to `.streamlit/secrets.toml` or set as an environment variable."
+        "❌ No GOOGLE_API_KEY found.\n"
+        "Add it to `.streamlit/secrets.toml` or set as an environment variable."
     )
     st.stop()
 
-# Configure Gemini
+# Configure Gemini API
 genai.configure(api_key=google_api_key)
 
 
