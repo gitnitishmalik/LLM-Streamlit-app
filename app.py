@@ -1,43 +1,25 @@
-# ================== SQLite Version Fix ==================
-# Must run BEFORE importing Chroma or anything using sqlite3 internally.
-try:
-    import pysqlite3
-    import sys
-    sys.modules["sqlite3"] = pysqlite3
-except ImportError:
-    import sqlite3  # fallback if pysqlite3 is missing
-# =========================================================
-
 import os
+import shutil
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-import google.generativeai as genai
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
+import google.generativeai as genai
 
-# ----------------- Load API Key -----------------
+# Load environment variables
 load_dotenv()
-
-google_api_key = None
-try:
-    google_api_key = st.secrets.get("GOOGLE_API_KEY")
-except Exception:
-    pass
-
+google_api_key = os.getenv("GOOGLE_API_KEY")
 if not google_api_key:
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-
-if not google_api_key:
-    st.error("❌ No GOOGLE_API_KEY found. Add it to `.streamlit/secrets.toml` or set as an environment variable.")
+    st.error("❌ GOOGLE_API_KEY not found.")
     st.stop()
 
 genai.configure(api_key=google_api_key)
 
-# ----------------- Utility Functions -----------------
+# Function to extract text from PDFs
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
@@ -48,20 +30,22 @@ def get_pdf_text(pdf_docs):
                 text += page_text
     return text
 
+# Function to split text into chunks
 def get_text_chunks(text):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
     return text_splitter.split_text(text)
 
+# Function to create a vector store
 def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    try:
-        vector_store = Chroma.from_texts(text_chunks, embedding=embeddings, persist_directory="chroma_db")
-        vector_store.persist()
-        return vector_store
-    except RuntimeError as e:
-        st.error(f"Chroma error: {e}")
-        st.stop()
+    vector_store = Chroma.from_texts(
+        texts=text_chunks,
+        embedding=embeddings,
+        persist_directory="chroma_db"
+    )
+    return vector_store
 
+# Function to create a conversational chain
 def get_conversational_chain():
     prompt_template = """
     Answer the question as detailed as possible from the provided context. 
@@ -79,15 +63,19 @@ def get_conversational_chain():
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
     return load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
 
+# Function to handle user input
 def user_input(user_question):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    new_db = Chroma(persist_directory="chroma_db", embedding_function=embeddings)
+    new_db = Chroma(
+        persist_directory="chroma_db",
+        embedding_function=embeddings
+    )
     docs = new_db.similarity_search(user_question)
     chain = get_conversational_chain()
     response = chain({"input_documents": docs, "question": user_question})
     st.write("💬 Reply:", response["output_text"])
 
-# ----------------- Streamlit App -----------------
+# Streamlit app
 def main():
     st.set_page_config(page_title="Chat with PDF using Gemini", layout="wide")
     st.header("📄 Chat with PDF using Gemini ✨")
