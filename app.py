@@ -1,34 +1,26 @@
-# ================== Deployment-safe Chroma Streamlit App ==================
+# ================== Streamlit PDF Chat App with FAISS & Google API ==================
 import os
-import shutil
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain.vectorstores import Chroma  # ✅ Correct import for deployment
+from langchain.vectorstores import FAISS
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+import pickle
 import google.generativeai as genai
 
 # ----------------- Load API Key -----------------
 load_dotenv()
-google_api_key = None
-try:
-    google_api_key = st.secrets.get("GOOGLE_API_KEY")
-except Exception:
-    pass
-
+google_api_key = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 if not google_api_key:
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-
-if not google_api_key:
-    st.error("❌ No GOOGLE_API_KEY found. Add it to `.streamlit/secrets.toml` or set as an environment variable.")
+    st.error("❌ No GOOGLE_API_KEY found. Add it to `.streamlit/secrets.toml` or as an environment variable.")
     st.stop()
 
 genai.configure(api_key=google_api_key)
 
-# ----------------- Utility Functions -----------------
+# ----------------- PDF Utilities -----------------
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
@@ -40,60 +32,79 @@ def get_pdf_text(pdf_docs):
     return text
 
 def get_text_chunks(text):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
-    return text_splitter.split_text(text)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
+    return splitter.split_text(text)
 
+# ----------------- FAISS Vector Store -----------------
 def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    
-    # Delete old DB to avoid conflicts (optional)
-    shutil.rmtree("chroma_db", ignore_errors=True)
-
-    # Correct initialization with persist_directory
-    vector_store = Chroma.from_texts(
-        texts=text_chunks,
-        embedding=embeddings,
-        persist_directory="chroma_db"
-    )
-
-    # Persist the vector store to disk
-    vector_store.persist()  # 🔑 ensures vectors are saved
+    vector_store = FAISS.from_texts(text_chunks, embeddings)
+    os.makedirs("faiss_store", exist_ok=True)
+    vector_store.save_local("faiss_store")
     return vector_store
 
+def load_vector_store():
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    if os.path.exists("faiss_store/index.faiss"):
+        return FAISS.load_local("faiss_store", embeddings, allow_dangerous_deserialization=True)
+    return None
+
+# ----------------- QA Chain -----------------
 def get_conversational_chain():
     prompt_template = """
-    Answer the question as detailed as possible from the provided context. 
-    If the answer is not in the context, say "Answer is not available in the context".
+Answer the question as detailed as possible from the provided context. 
+If the answer is not in the context, say "Answer is not available in the context".
 
-    Context:
-    {context}
+Context:
+{context}
 
-    Question:
-    {question}
+Question:
+{question}
 
-    Answer:
-    """
+Answer:
+"""
     model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
     return load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
 
+# ----------------- Caching -----------------
+CACHE_FILE = "qa_cache.pkl"
+
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "rb") as f:
+            return pickle.load(f)
+    return {}
+
+def save_cache(cache):
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump(cache, f)
+
 def user_input(user_question):
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    
-    # Load existing Chroma DB without recreating
-    new_db = Chroma(
-        persist_directory="chroma_db",
-        embedding_function=embeddings
-    )
-    docs = new_db.similarity_search(user_question)
+    cache = load_cache()
+    if user_question in cache:
+        st.write("💬 Reply (from cache):", cache[user_question])
+        return
+
+    vector_store = load_vector_store()
+    if not vector_store:
+        st.warning("No vector store found. Please upload PDFs first.")
+        return
+
+    docs = vector_store.similarity_search(user_question)
     chain = get_conversational_chain()
     response = chain({"input_documents": docs, "question": user_question})
-    st.write("💬 Reply:", response["output_text"])
+    answer = response["output_text"]
+
+    st.write("💬 Reply:", answer)
+
+    cache[user_question] = answer
+    save_cache(cache)
 
 # ----------------- Streamlit App -----------------
 def main():
-    st.set_page_config(page_title="Chat with PDF using Gemini", layout="wide")
-    st.header("📄 Chat with PDF using Gemini ✨")
+    st.set_page_config(page_title="Chat with PDF using Google API & FAISS", layout="wide")
+    st.header("📄 Chat with PDF using Google API & FAISS ✨")
 
     with st.sidebar:
         st.title("📚 Upload PDF Files")
@@ -103,7 +114,7 @@ def main():
                 with st.spinner("Processing PDFs..."):
                     raw_text = get_pdf_text(pdf_docs)
                     text_chunks = get_text_chunks(raw_text)
-                    get_vector_store(text_chunks)  # persists automatically
+                    get_vector_store(text_chunks)
                     st.success("✅ PDFs processed and indexed!")
             else:
                 st.warning("⚠️ Please upload at least one PDF file.")
@@ -114,3 +125,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
