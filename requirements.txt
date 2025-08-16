@@ -6,6 +6,13 @@ PyPDF2
 chromadb
 langchain_google_genai
 langchain-community
-
+streamlit
+python-dotenv
+PyPDF2
+langchain>=0.1.111
+google-generativeai
+langchain-google-genai
+chromadb>=0.3.27
+duckdb
 
 
