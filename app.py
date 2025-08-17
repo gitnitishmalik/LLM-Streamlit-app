@@ -4,7 +4,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
@@ -15,7 +15,7 @@ import google.generativeai as genai
 load_dotenv()
 google_api_key = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 if not google_api_key:
-    st.error("❌ No GOOGLE_API_KEY found. Add it to `.streamlit/secrets.toml` or as an environment variable.")
+    st.error("❌ No GOOGLE_API_KEY found. Add it to Streamlit Secrets or as an environment variable.")
     st.stop()
 
 genai.configure(api_key=google_api_key)
@@ -36,17 +36,19 @@ def get_text_chunks(text):
     return splitter.split_text(text)
 
 # ----------------- FAISS Vector Store -----------------
+FAISS_PATH = "/tmp/faiss_store"
+
 def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_texts(text_chunks, embeddings)
-    os.makedirs("faiss_store", exist_ok=True)
-    vector_store.save_local("faiss_store")
+    os.makedirs(FAISS_PATH, exist_ok=True)
+    vector_store.save_local(FAISS_PATH)
     return vector_store
 
 def load_vector_store():
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    if os.path.exists("faiss_store/index.faiss"):
-        return FAISS.load_local("faiss_store", embeddings, allow_dangerous_deserialization=True)
+    if os.path.exists(os.path.join(FAISS_PATH, "index.faiss")):
+        return FAISS.load_local(FAISS_PATH, embeddings, allow_dangerous_deserialization=True)
     return None
 
 # ----------------- QA Chain -----------------
@@ -68,7 +70,7 @@ Answer:
     return load_qa_chain(llm=model, prompt=prompt, chain_type="stuff")
 
 # ----------------- Caching -----------------
-CACHE_FILE = "qa_cache.pkl"
+CACHE_FILE = "/tmp/qa_cache.pkl"
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -125,4 +127,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
